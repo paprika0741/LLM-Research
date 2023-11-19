@@ -77,6 +77,56 @@ $ pip install -r requirements.txt
 - Tae Hwan Jung(Jeff Jung) @graykode
 - Author Email : [nlkey2022@gmail.com](mailto:nlkey2022@gmail.com)
 
+## 文本生成 
+在每个时间步，模型基于输入和过去的注意力信息，计算出下一个 token 的预测值，并更新过去的注意力键和值，以供后续时间步使用。
++ t = 0   
+
+  Input: input_text, past = none <br>   
+  Conditional generation: 根据输入文本生成, input_0 = input_context   <br>   
+  Unconditional generation: 无条件生成, input_0 = start token(e.g. '<|endoftext|>')    <br>   
+​	 Attention part:  $q_0 = input_0*W^Q, k_0 = input_0*W^K, v_0 = input_0*W^V $<br>   
+​                   $q  = q_0, k = k_0, v = v_0$ <br>   
+​	 output: predict_token,  $k$ ,  $v$  <br>   
++ t = 1,2...   <br>   
+​		input_t:last_predict_token, which means seq_len = 1<br>   
+​		past: 包含了过去所有时间步的key和value: $[k_0,...k_t-1]$  ,  $[v_0,...v_t-1]$ <br>   
+​		Attention part:  $q_t  = input_t*W^Q, k_t = input*W^K, v_t = input*W^V $<br>   
+​                    $q = q_t, k = [k_0,...k_t-1,k_t]  v =  [v_0,...v_t-1,v_t]$<br>   
+​		output: predict_token,  $k$ ,  $v$ <br>   
+
+ 
+ 
+ 
+### 模型结构 
+```lua
+GPT2LMHeadModel
+|
+|-- GPT2Model
+|   |
+|   |-- Embedding Layers
+|   |   |
+|   |   |-- Word Embedding Layer
+|   |   |  
+|   |   |-- Position Embedding Layer
+|   |   |   |
+|   |   |
+|   |   |-- Token Type Embedding Layer
+|   |
+|   |-- Blocks
+|   |   |
+|   |   |-- Layer Normalization
+|   |   |
+|   |   |-- Multi-Head Self-Attention
+|   |   |
+|   |   |-- Layer Normalization
+|   |   |
+|   |   |-- MLP
+|   |
+|   |-- Layer Normalization
+|       
+|-- GPT2LMHead:Projects the final hidden states to predict the next word in the sequence
+```
+
 
 
 ## License

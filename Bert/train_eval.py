@@ -7,8 +7,7 @@ from sklearn import metrics
 import time
 from utils import get_time_dif
 from pytorch_pretrained.optimization import BertAdam
-
-
+import os
 # 权重初始化，默认xavier
 def init_network(model, method='xavier', exclude='embedding', seed=123):
     for name, w in model.named_parameters():
@@ -48,20 +47,24 @@ def train(config, model, train_iter, dev_iter, test_iter):
     model.train()
     for epoch in range(config.num_epochs):
         print('Epoch [{}/{}]'.format(epoch + 1, config.num_epochs))
-        for i, (trains, labels) in enumerate(train_iter):
-            outputs = model(trains)
+        for i, (trains, labels) in enumerate(train_iter):  
+            # trains[0]: input sequence [bs,seq_len], trains[1]: TODO: 什么数据 作用 [bs], trains[2]: padding mask [bs,seq_len] 0/1 ,0表示是padding的部分
+            outputs = model(trains) # outputs [bs, num_classes]
             model.zero_grad()
-            loss = F.cross_entropy(outputs, labels)
+            loss = F.cross_entropy(outputs, labels) # labels: [bs] 
             loss.backward()
             optimizer.step()
             if total_batch % 100 == 0:
                 # 每多少轮输出在训练集和验证集上的效果
-                true = labels.data.cpu()
-                predic = torch.max(outputs.data, 1)[1].cpu()
+                true = labels.data.cpu() #[bs]
+                predic = torch.max(outputs.data, 1)[1].cpu() #[bs]
                 train_acc = metrics.accuracy_score(true, predic)
                 dev_acc, dev_loss = evaluate(config, model, dev_iter)
                 if dev_loss < dev_best_loss:
                     dev_best_loss = dev_loss
+                    folder_path = os.path.dirname(config.save_path)
+                    if not os.path.exists(folder_path):
+                        os.makedirs(folder_path)
                     torch.save(model.state_dict(), config.save_path)
                     improve = '*'
                     last_improve = total_batch

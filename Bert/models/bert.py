@@ -30,17 +30,21 @@ class Config(object):
 
 
 class Model(nn.Module):
-
+    '''
+    文本分类：将输入的文本数据分类成不同的类别，将句子的[CLS]对应的向量作为句子的表示，然后将句子的表示输入Linear Classifier中进行分类
+    BERT + linear classifier
+    '''
+    
     def __init__(self, config):
         super(Model, self).__init__()
-        self.bert = BertModel.from_pretrained(config.bert_path)
+        self.bert = BertModel.from_pretrained(config.bert_path) # 加载预训练模型 和 BERTConfig, config from json file
         for param in self.bert.parameters():
             param.requires_grad = True
         self.fc = nn.Linear(config.hidden_size, config.num_classes)
 
     def forward(self, x):
-        context = x[0]  # 输入的句子
-        mask = x[2]  # 对padding部分进行mask，和句子一个size，padding部分用0表示，如：[1, 1, 1, 1, 0, 0]
-        _, pooled = self.bert(context, attention_mask=mask, output_all_encoded_layers=False)
-        out = self.fc(pooled)
+        context = x[0]  # 输入的句子,[bs,seq_len]
+        mask = x[2]  # padding mash, [bs,seq_len], padding部分用0表示，如：[1, 1, 1, 1, 0, 0]
+        _, pooled = self.bert(context, attention_mask=mask, output_all_encoded_layers=False) # pooled, [batch_size, hidden_size]
+        out = self.fc(pooled)#  [batch_size, hidden_size] --> [batch_size, num_classes]
         return out

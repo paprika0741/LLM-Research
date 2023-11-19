@@ -46,16 +46,24 @@ class Model(nn.Module):
         self.fc_cnn = nn.Linear(config.num_filters * len(config.filter_sizes), config.num_classes)
 
     def conv_and_pool(self, x, conv):
-        x = F.relu(conv(x)).squeeze(3)
-        x = F.max_pool1d(x, x.size(2)).squeeze(2)
-        return x
+        '''
+        x : [bs, 1, seq_len, hidden_size]
+        conv: Conv2d(1, num_filters, ( filter_size,  hidden_size) ), 
+            1:input channel,
+            num_filters: output channel
+            filter_size:卷积核尺寸
+            hidden_size:stride
+        '''
+        x = F.relu(conv(x)).squeeze(3) #  [bs, 1, seq_len, hidden_size]--> -->[bs, num_filters, (seq_len-filter_size)/stride+1 ,1] --> [bs,num_filters , (seq_len-filter_size)/stride+1]
+        x = F.max_pool1d(x, x.size(2)).squeeze(2) #  [bs,num_filters , (seq_len-filter_size)/stride+1]   --> [bs, num_filters, 1] --> [bs, num_filters]
+        return x # [bs, num_filters]
 
     def forward(self, x):
-        context = x[0]  # 输入的句子
-        mask = x[2]  # 对padding部分进行mask，和句子一个size，padding部分用0表示，如：[1, 1, 1, 1, 0, 0]
-        encoder_out, text_cls = self.bert(context, attention_mask=mask, output_all_encoded_layers=False)
-        out = encoder_out.unsqueeze(1)
-        out = torch.cat([self.conv_and_pool(out, conv) for conv in self.convs], 1)
+        context = x[0]  # 输入的句子 [bs, seq_len], 
+        mask = x[2]  # 对padding部分进行mask，和句子一个size，padding部分用0表示，如：[1, 1, 1, 1, 0, 0], [bs, seq_len]
+        encoder_out, text_cls = self.bert(context, attention_mask=mask, output_all_encoded_layers=False) # encoder_out: [bs, seq_len, hidden_size], text_cls: [bs, hidden_size]
+        out = encoder_out.unsqueeze(1) # [bs, 1, seq_len, hidden_size],1表示channel
+        out = torch.cat([self.conv_and_pool(out, conv) for conv in self.convs], 1) # [bs,num_filters*len(filter_sizes)]
         out = self.dropout(out)
-        out = self.fc_cnn(out)
+        out = self.fc_cnn(out) #  [bs,num_filters*len(filter_sizes)] -> [bs, num_classes]
         return out

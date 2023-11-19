@@ -228,26 +228,45 @@ try:
     from apex.normalization.fused_layer_norm import FusedLayerNorm as BertLayerNorm
 except ImportError:
     logger.info("Better speed can be achieved with apex installed from https://www.github.com/nvidia/apex .")
-    class BertLayerNorm(nn.Module):
-        def __init__(self, hidden_size, eps=1e-12):
-            """Construct a layernorm module in the TF style (epsilon inside the square root).
-            """
-            super(BertLayerNorm, self).__init__()
-            self.weight = nn.Parameter(torch.ones(hidden_size))
-            self.bias = nn.Parameter(torch.zeros(hidden_size))
-            self.variance_epsilon = eps
 
-        def forward(self, x):
-            u = x.mean(-1, keepdim=True)
-            s = (x - u).pow(2).mean(-1, keepdim=True)
-            x = (x - u) / torch.sqrt(s + self.variance_epsilon)
-            return self.weight * x + self.bias
+    class BertLayerNorm(nn.Module):
+            def __init__(self, hidden_size, eps=1e-12):
+                """Construct a layernorm module in the TF style (epsilon inside the square root).
+                """
+                super(BertLayerNorm, self).__init__()
+                self.weight = nn.Parameter(torch.ones(hidden_size))
+                self.bias = nn.Parameter(torch.zeros(hidden_size))
+                self.variance_epsilon = eps
+
+            def forward(self, x):
+                u = x.mean(-1, keepdim=True)
+                s = (x - u).pow(2).mean(-1, keepdim=True)
+                x = (x - u) / torch.sqrt(s + self.variance_epsilon)
+                return self.weight * x + self.bias
 
 class BertEmbeddings(nn.Module):
-    """Construct the embeddings from word, position and token_type embeddings.
+    """
+    Construct the embeddings from word, position and token_type embeddings.
     """
     def __init__(self, config):
         super(BertEmbeddings, self).__init__()
+        '''
+        word_embeddings:
+        将输入的词汇索引转换为词嵌入向量。config.vocab_size 表示词汇表的大小，config.hidden_size 表示词嵌入的维度（通常与BERT模型的隐藏状态维度相同）。
+        padding_idx=0 表示将索引为0的词视为填充词，其对应的嵌入向量将初始化为零向量。
+        
+        position_embeddings:
+        将位置信息嵌入到词嵌入中
+        config.max_position_embeddings 表示最大的句子长度，
+        config.hidden_size 表示位置嵌入的维度。
+        
+        token_type_embeddings:
+        通常使用两个标记类型：0和1，分别表示句子A和句子B。
+        嵌入层将标记类型索引映射到嵌入向量。
+        config.type_vocab_size 表示标记类型的数量，
+        
+        和 transformer 论文中的设计不同，这一块是训练出来的，而不是通过 Sinusoidal 函数计算得到的固定嵌入
+        '''
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
@@ -259,14 +278,14 @@ class BertEmbeddings(nn.Module):
 
     def forward(self, input_ids, token_type_ids=None):
         seq_length = input_ids.size(1)
-        position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
-        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device) # [seq_len]
+        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)# [1,seq_len] --> [bs,seq_len]
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
 
-        words_embeddings = self.word_embeddings(input_ids)
-        position_embeddings = self.position_embeddings(position_ids)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
+        words_embeddings = self.word_embeddings(input_ids) # [bs,seq_len]-->[bs,seq_len,hidden_size]
+        position_embeddings = self.position_embeddings(position_ids) # [bs,seq_len]-->[bs,seq_len,hidden_size]
+        token_type_embeddings = self.token_type_embeddings(token_type_ids) # [bs,seq_len]-->[bs,seq_len,hidden_size]
 
         embeddings = words_embeddings + position_embeddings + token_type_embeddings
         embeddings = self.LayerNorm(embeddings)
@@ -281,51 +300,73 @@ class BertSelfAttention(nn.Module):
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
                 "heads (%d)" % (config.hidden_size, config.num_attention_heads))
-        self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
-        self.all_head_size = self.num_attention_heads * self.attention_head_size
-
-        self.query = nn.Linear(config.hidden_size, self.all_head_size)
-        self.key = nn.Linear(config.hidden_size, self.all_head_size)
-        self.value = nn.Linear(config.hidden_size, self.all_head_size)
+        self.num_attention_heads = config.num_attention_heads #注意力头的数量
+        # 每个注意力头的维度 这里int()没有意义，因为config.hidden_size % config.num_attention_heads; 但是有些实现剪枝 剪掉几个attention_head
+        self.attention_head_size = int(config.hidden_size / config.num_attention_heads) 
+        self.all_head_size = self.num_attention_heads * self.attention_head_size #所有注意力头的维度,实际上 all_head_size = num_attention_heads * attention_head_size == hidden_size
+        # 三个线性变换层 query、key 和 value，将输入的 hidden_states 投影到不同的注意力子空间
+        self.query = nn.Linear(config.hidden_size, self.all_head_size) # W^Q
+        self.key = nn.Linear(config.hidden_size, self.all_head_size) # W^K
+        self.value = nn.Linear(config.hidden_size, self.all_head_size) #W^V
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
     def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
-        x = x.view(*new_x_shape)
-        return x.permute(0, 2, 1, 3)
+        '''
+        把 hidden_size 拆成多个头输出的形状，并且将中间两维转置以进行矩阵相乘；
+        x: [bs,seq_len,hidden_size]
+        hidden_size = num_head * head_size
+        '''
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size) # [bs,seq_len,num_head,head_size]
+        x = x.view(*new_x_shape) # [bs,seq_len,hidden_size] --> [bs,seq_len,num_head,head_size]
+        return x.permute(0, 2, 1, 3) #交换第一第二维, [bs,seq_len,num_head，head_size] --> [bs,num_head,seq_len,head_size]
 
     def forward(self, hidden_states, attention_mask):
-        mixed_query_layer = self.query(hidden_states)
-        mixed_key_layer = self.key(hidden_states)
-        mixed_value_layer = self.value(hidden_states)
-
-        query_layer = self.transpose_for_scores(mixed_query_layer)
-        key_layer = self.transpose_for_scores(mixed_key_layer)
-        value_layer = self.transpose_for_scores(mixed_value_layer)
+        '''
+        完成Self Attention 计算: Attention(Q,K,V) = softmax(Q*K^T/sqrt(d_k))*V 
+        $$MHA(Q, K, V) = Concat(head_1, ..., head_h)W^O$$
+        $$head_i = SDPA(QW_i^Q, KW_i^K, VW_i^V)$$
+        $$SDPA(Q, K, V) = softmax(\frac{QK^T}{\sqrt(d_k)})V$$
+        Args:
+            hidden_states: [bs,seq_len,hidden_size]
+            attention_mask: [bs,1,1,seq_len], 需要忽略的位置是 -10000(-inf) softmax(-inf) = 0
+        Returns:
+        ''' 
+        mixed_query_layer = self.query(hidden_states)# Q = X*W^Q, [bs,seq_len,hidden_size]-->[bs,seq_len,all_head_size] = [bs,seq_len,hidden_size]
+        mixed_key_layer = self.key(hidden_states)# K = X*W^K, [bs,seq_len,hidden_size]-->[bs,seq_len,all_head_size] = [bs,seq_len,hidden_size]
+        mixed_value_layer = self.value(hidden_states)# V = X*W^V,  [bs,seq_len,hidden_size]-->[bs,seq_len,all_head_size] = [bs,seq_len,hidden_size]
+        
+        query_layer = self.transpose_for_scores(mixed_query_layer)# [bs,seq_len,hidden_size] --> [bs,num_head,seq_len,head_size]
+        key_layer = self.transpose_for_scores(mixed_key_layer) # [bs,seq_len,hidden_size] --> [bs,num_head,seq_len,head_size]
+        value_layer = self.transpose_for_scores(mixed_value_layer)# [bs,seq_len,hidden_size] --> [bs,num_head,seq_len,head_size] 
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        # key.transpose:  [bs,num_head, head_size,seq_len]
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))#  [bs,num_head,seq_len,seq_len] 
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)#  [bs,num_head,seq_len,seq_len]
         # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
-        attention_scores = attention_scores + attention_mask
+        attention_scores = attention_scores + attention_mask # [bs,num_head,seq_len,seq_len] + [bs,1,1,seq_len], attention_mask会广播(bradcast)到与attention_scores相同的维度
 
         # Normalize the attention scores to probabilities.
-        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        attention_probs = nn.Softmax(dim=-1)(attention_scores) #  [bs,num_head,seq_len,seq_len] 最后一个维度（dim=-1）上的数值进行 Softmax 归一化
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
         attention_probs = self.dropout(attention_probs)
 
-        context_layer = torch.matmul(attention_probs, value_layer)
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-        context_layer = context_layer.view(*new_context_layer_shape)
-        return context_layer
+        context_layer = torch.matmul(attention_probs, value_layer) #[bs, num_head, seq_len,  head_size]
+        # permute(0, 2, 1, 3) 维度的转置操作，将 num_head 和 seq_len 互换位置   [bs, num_head, seq_len,  ead_size] --> [bs, seq_len, num_head,  head_size]
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous() # .contiguous() 是 PyTorch 中的一个方法，它用于确保张量在内存中的存储是连续的。
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)  # [bs, seq_len,  all_head_size] = [bs, seq_len, hidden_size]
+        context_layer = context_layer.view(*new_context_layer_shape) #  [bs, seq_len, num_head,  head_size] --> [bs, seq_len, hidden_size]
+        return context_layer # [bs, seq_len, hidden_size]
 
 
 class BertSelfOutput(nn.Module):
+    '''
+    全连接 --> Dropout-->LayerNorm（残差连接）
+    残差连接:降低网络层数过深带来的训练难度，对原始输入更加敏感
+    '''
     def __init__(self, config):
         super(BertSelfOutput, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
@@ -333,25 +374,49 @@ class BertSelfOutput(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, input_tensor):
-        hidden_states = self.dense(hidden_states)
+        '''
+        Args:
+            hidden_states: attention层的输出, [bs, seq_len, hidden_size]
+            input_tensor: attention层的输入,  [bs, seq_len, hidden_size]
+        Returns:
+            hidden_states: [bs, seq_len, hidden_size],
+        '''
+        hidden_states = self.dense(hidden_states) # [bs, seq_len, hidden_size] --> [bs, seq_len, hidden_size]
         hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        return hidden_states
+        hidden_states = self.LayerNorm(hidden_states + input_tensor) # 残差连接 + LayerNorm (Add&Norm in transformer)
+        return hidden_states # [bs, seq_len, hidden_size]
 
 
 class BertAttention(nn.Module):
+    '''
+    X_attention = softmax(X_query * X_key^T / sqrt(d_k)) * X_value
+    X_hidden = Linear(X_attention) 
+    X_hidden = Dropout(X_hidden)
+    X_hidden =  (X_hidden + X_attention) 残差连接
+    output = LayerNorm(X_hidden) LayerNorm
+    '''
     def __init__(self, config):
         super(BertAttention, self).__init__()
         self.self = BertSelfAttention(config)
         self.output = BertSelfOutput(config)
 
     def forward(self, input_tensor, attention_mask):
-        self_output = self.self(input_tensor, attention_mask)
-        attention_output = self.output(self_output, input_tensor)
+        '''
+        Args:
+            input_tensor: [bs, seq_len, hidden_size]
+            attention_mask: [bs, 1, 1, seq_len], padding mask
+        '''
+        self_output = self.self(input_tensor, attention_mask) # [bs, seq_len, hidden_size] --> [bs, seq_len,  all_head_size], all_head_size == hidden_size
+        attention_output = self.output(self_output, input_tensor) 
         return attention_output
 
 
 class BertIntermediate(nn.Module):
+    '''
+    全连接+激活
+    hidden_states =Linear(ACT(Linear(hidden_states)))
+    [bs, seq_len, hidden_size] --> [bs, seq_len, intermediate_size]
+    '''
     def __init__(self, config):
         super(BertIntermediate, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
@@ -361,12 +426,16 @@ class BertIntermediate(nn.Module):
             self.intermediate_act_fn = config.hidden_act
 
     def forward(self, hidden_states):
-        hidden_states = self.dense(hidden_states)
-        hidden_states = self.intermediate_act_fn(hidden_states)
+        hidden_states = self.dense(hidden_states) # [bs, seq_len, hidden_size] --> [bs, seq_len, intermediate_size]
+        hidden_states = self.intermediate_act_fn(hidden_states) #[bs, seq_len, intermediate_size]
         return hidden_states
 
 
 class BertOutput(nn.Module):
+    '''
+    全连接 +dropout+LayerNorm (残差连接)
+    [bs, seq_len, intermediate_size] --> [bs, seq_len, hidden_size]
+    '''
     def __init__(self, config):
         super(BertOutput, self).__init__()
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
@@ -374,36 +443,55 @@ class BertOutput(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, input_tensor):
-        hidden_states = self.dense(hidden_states)
+        hidden_states = self.dense(hidden_states) # [bs, seq_len, intermediate_size] --> [bs, seq_len, hidden_size]
         hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor) # 残差连接 + LayerNorm 
         return hidden_states
 
 
 class BertLayer(nn.Module):
     def __init__(self, config):
         super(BertLayer, self).__init__()
-        self.attention = BertAttention(config)
-        self.intermediate = BertIntermediate(config)
-        self.output = BertOutput(config)
+        self.attention = BertAttention(config) # Self Attention + Add&Norm, 计算attention
+        self.intermediate = BertIntermediate(config) # Feed Forward + Add&Norm, bs, seq_len, hidden_size] --> [bs, seq_len, intermediate_size]
+        self.output = BertOutput(config)  # [bs, seq_len, intermediate_size] --> [bs, seq_len, hidden_size] 
 
     def forward(self, hidden_states, attention_mask):
-        attention_output = self.attention(hidden_states, attention_mask)
-        intermediate_output = self.intermediate(attention_output)
-        layer_output = self.output(intermediate_output, attention_output)
+        '''
+        Args:
+            hidden_states: [bs, seq_len, hidden_size]
+            attention_mask: [bs, 1, 1, seq_len] 
+        Returns:
+            layer_output: [bs, seq_len, hidden_size]
+        '''
+        attention_output = self.attention(hidden_states, attention_mask) # [bs, seq_len, hidden_size]
+        intermediate_output = self.intermediate(attention_output) # [bs, seq_len, hidden_size] --> [bs, seq_len, intermediate_size]
+        layer_output = self.output(intermediate_output, attention_output) # [bs, seq_len, intermediate_size] --> [bs, seq_len, hidden_size] 
         return layer_output
 
 
 class BertEncoder(nn.Module):
+    '''
+    多层 BertLayer 组成 BertEncoder
+    Encoders = BertLayer * L
+    '''
     def __init__(self, config):
         super(BertEncoder, self).__init__()
         layer = BertLayer(config)
+        # BertLayer*L
         self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
 
     def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True):
+        '''
+        Args:
+            hidden_states: [bs,seq_len,hidden_size]
+            attention_mask：[bs,1,1,seq_len],padding mask
+            output_all_encoded_layers:是否输出所有层的结果
+                如果为 False，则只返回最后一个编码层的输出，否则返回所有编码层的输出。
+        '''
         all_encoder_layers = []
         for layer_module in self.layer:
-            hidden_states = layer_module(hidden_states, attention_mask)
+            hidden_states = layer_module(hidden_states, attention_mask) # [bs,seq_len,hidden_size]
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
         if not output_all_encoded_layers:
@@ -412,21 +500,29 @@ class BertEncoder(nn.Module):
 
 
 class BertPooler(nn.Module):
+    '''
+    简单地取出了句子的第一个token，即[CLS]对应的向量，然后过一个全连接层和一个激活函数后输出
+    '''
     def __init__(self, config):
         super(BertPooler, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
-        # We "pool" the model by simply taking the hidden state corresponding
-        # to the first token.
-        first_token_tensor = hidden_states[:, 0]
-        pooled_output = self.dense(first_token_tensor)
-        pooled_output = self.activation(pooled_output)
-        return pooled_output
+        # We "pool" the model by simply taking the hidden state corresponding to the first token. 
+        # NSP任务 [CLS] token的向量表示来预测两个句子是否是相邻句子  
+        # 文本分类任务 [CLS] token用于文本分类的特征向量
+        first_token_tensor = hidden_states[:, 0] # [bs,hidden_size]
+        pooled_output = self.dense(first_token_tensor)# [bs,hidden_size]-->[bs,hidden_size]
+        pooled_output = self.activation(pooled_output)# [bs,hidden_size]-->[bs,hidden_size]
+        return pooled_output # [bs,hidden_size]
 
 
 class BertPredictionHeadTransform(nn.Module):
+    '''
+        对 BERT 输出进行变换,包括全连接层,激活函数和 LayerNorm 层
+        完成一些线性变换
+    '''
     def __init__(self, config):
         super(BertPredictionHeadTransform, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
@@ -437,6 +533,12 @@ class BertPredictionHeadTransform(nn.Module):
         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=1e-12)
 
     def forward(self, hidden_states):
+        '''
+            Args:
+                hidden_states: [bs, seq_len, hidden_size]
+            Returns:
+                hidden_states: [bs, seq_len, hidden_size]
+        '''
         hidden_states = self.dense(hidden_states)
         hidden_states = self.transform_act_fn(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
@@ -444,22 +546,34 @@ class BertPredictionHeadTransform(nn.Module):
 
 
 class BertLMPredictionHead(nn.Module):
+    '''
+    用于预测[MASK]位置的输出在每个词作为类别的分类输出,实际实现预测了所有词,只是计算loss的时候只计算了[MASK]位置的loss
+    BertPredictionHeadTransform: 完成一些线性变换
+    '''
     def __init__(self, config, bert_model_embedding_weights):
         super(BertLMPredictionHead, self).__init__()
         self.transform = BertPredictionHeadTransform(config)
 
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.
+        # bert_model_embedding_weights.shape: [vocab_size, hidden_size]
         self.decoder = nn.Linear(bert_model_embedding_weights.size(1),
                                  bert_model_embedding_weights.size(0),
-                                 bias=False)
+                                 bias=False) # (hidden_size,vocab_size)
         self.decoder.weight = bert_model_embedding_weights
-        self.bias = nn.Parameter(torch.zeros(bert_model_embedding_weights.size(0)))
+        self.bias = nn.Parameter(torch.zeros(bert_model_embedding_weights.size(0))) # [vocab_size] 初始化了一个全 0 向量作为预测权重的 bias
 
     def forward(self, hidden_states):
-        hidden_states = self.transform(hidden_states)
-        hidden_states = self.decoder(hidden_states) + self.bias
-        return hidden_states
+        '''
+            Args:
+                hidden_states: [bs, seq_len, hidden_size],input_ids经过BertModel后的输出
+            Returns:
+                hidden_states: [bs, seq_len, vocab_size],预测每个句子每个词是什么类别的概率值，注意这里没有做 softmax 
+        
+        '''
+        hidden_states = self.transform(hidden_states) # [bs, seq_len, hidden_size] --> [bs, seq_len, hidden_size]
+        hidden_states = self.decoder(hidden_states) + self.bias # [bs, seq_len, hidden_size] --> [bs, seq_len, vocab_size]
+        return hidden_states # [bs, seq_len, vocab_size]
 
 
 class BertOnlyMLMHead(nn.Module):
@@ -468,8 +582,11 @@ class BertOnlyMLMHead(nn.Module):
         self.predictions = BertLMPredictionHead(config, bert_model_embedding_weights)
 
     def forward(self, sequence_output):
-        prediction_scores = self.predictions(sequence_output)
-        return prediction_scores
+        '''
+        sequence_output: [bs,seq_len,hidden_size],input_ids经过BertModel后的输出
+        '''
+        prediction_scores = self.predictions(sequence_output) # [bs, seq_len, hidden_size] --> [bs, seq_len, vocab_size]
+        return prediction_scores # [bs, seq_len, vocab_size]
 
 
 class BertOnlyNSPHead(nn.Module):
@@ -478,15 +595,20 @@ class BertOnlyNSPHead(nn.Module):
         self.seq_relationship = nn.Linear(config.hidden_size, 2)
 
     def forward(self, pooled_output):
-        seq_relationship_score = self.seq_relationship(pooled_output)
+        seq_relationship_score = self.seq_relationship(pooled_output) # [bs,hidden_size] --> [bs,2] 2分类，表示两个句子是否是相邻句子
         return seq_relationship_score
 
 
 class BertPreTrainingHeads(nn.Module):
+    '''
+    负责两个任务的预测模块：
+    BertLMPredictionHead: 成MLM 任务的预测，预测[MASK]位置的输出在每个词作为类别的分类输出
+    Linear: 代表 NSP 任务的线性层,二分类 
+    '''
     def __init__(self, config, bert_model_embedding_weights):
         super(BertPreTrainingHeads, self).__init__()
         self.predictions = BertLMPredictionHead(config, bert_model_embedding_weights)
-        self.seq_relationship = nn.Linear(config.hidden_size, 2)
+        self.seq_relationship = nn.Linear(config.hidden_size, 2) # [bs,hidden_size] --> [bs,2]
 
     def forward(self, sequence_output, pooled_output):
         prediction_scores = self.predictions(sequence_output)
@@ -510,7 +632,11 @@ class BertPreTrainedModel(nn.Module):
         self.config = config
 
     def init_bert_weights(self, module):
-        """ Initialize the weights.
+        """ 
+        Initialize the weights.
+        用于初始化BERT模型的权重。
+        对于 nn.Linear 和 nn.Embedding 类型的模块，采用正态分布初始化权重。
+        对于 BertLayerNorm 类型的模块，将偏置项初始化为零，权重初始化为1.0。
         """
         if isinstance(module, (nn.Linear, nn.Embedding)):
             # Slightly different from the TF version which uses truncated_normal for initialization
@@ -525,6 +651,7 @@ class BertPreTrainedModel(nn.Module):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *inputs, **kwargs):
         """
+        从预训练模型文件或PyTorch状态字典中实例化一个 BertPreTrainedModel 对象
         Instantiate a BertPreTrainedModel from a pre-trained model file or a pytorch state dict.
         Download and cache the pre-trained model file if needed.
 
@@ -550,7 +677,7 @@ class BertPreTrainedModel(nn.Module):
             *inputs, **kwargs: additional input for the specific Bert class
                 (ex: num_labels for BertForSequenceClassification)
         """
-        state_dict = kwargs.get('state_dict', None)
+        state_dict = kwargs.get('state_dict', None) #可选参数，用于传递一个PyTorch状态字典（collections.OrderedDict 对象），其中包含了模型的权重信息。在代码中，首先使用 kwargs.get('state_dict', None) 获取 state_dict 参数的值，如果没有提供该参数，则默认为 None。接下来，使用 kwargs.pop('state_dict', None) 将 state_dict 参数从 kwargs 字典中移除，以便后续的代码不再使用这个参数
         kwargs.pop('state_dict', None)
         cache_dir = kwargs.get('cache_dir', None)
         kwargs.pop('cache_dir', None)
@@ -560,7 +687,7 @@ class BertPreTrainedModel(nn.Module):
         if pretrained_model_name_or_path in PRETRAINED_MODEL_ARCHIVE_MAP:
             archive_file = PRETRAINED_MODEL_ARCHIVE_MAP[pretrained_model_name_or_path]
         else:
-            archive_file = pretrained_model_name_or_path
+            archive_file = pretrained_model_name_or_path #自定义的模型文件路径
         # redirect to the cache, if necessary
         try:
             resolved_archive_file = cached_path(archive_file, cache_dir=cache_dir)
@@ -669,7 +796,9 @@ class BertModel(BertPreTrainedModel):
             types indices selected in [0, 1]. Type 0 corresponds to a `sentence A` and type 1 corresponds to
             a `sentence B` token (see BERT paper for more details).
         `attention_mask`: an optional torch.LongTensor of shape [batch_size, sequence_length] with indices
-            selected in [0, 1]. It's a mask to be used if the input sequence length is smaller than the max
+            selected in [0, 1]. 
+            This argument indicates to the model which tokens should be attended to, and which should not.
+            It's a mask to be used if the input sequence length is smaller than the max
             input sequence length in the current batch. It's the mask that we typically use for attention when
             a batch has varying length sentences.
         `output_all_encoded_layers`: boolean which controls the content of the `encoded_layers` output as described below. Default: `True`.
@@ -701,43 +830,56 @@ class BertModel(BertPreTrainedModel):
     """
     def __init__(self, config):
         super(BertModel, self).__init__(config)
-        self.embeddings = BertEmbeddings(config)
+        self.embeddings = BertEmbeddings(config) #根据id获取对应向量表示
         self.encoder = BertEncoder(config)
         self.pooler = BertPooler(config)
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, output_all_encoded_layers=True):
+        '''
+        Args:
+            input_ids: [bs,seq_len], 输入的token id
+            token_type_ids: [bs,seq_len], 区分两个句子的token id, 0表示第一个句子,1表示第二个句子, segment embedding
+            attention_mask: [bs,seq_len], 1表示不用忽略，0表示要忽略的token 
+                            用于: 句子长度不一样的时候，padding部分不参与attention计算
+                                  训练时 [mask]位置的token需要忽略
+            output_all_encoded_layers(bool): 是否输出所有层的结果
+        Returns:
+        
+        '''
         if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids)
+            attention_mask = torch.ones_like(input_ids) #全部1，表示不是padding部分
         if token_type_ids is None:
-            token_type_ids = torch.zeros_like(input_ids)
+            token_type_ids = torch.zeros_like(input_ids)#全部0，表示只有一个句子
 
         # We create a 3D attention mask from a 2D tensor mask.
         # Sizes are [batch_size, 1, 1, to_seq_length]
         # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
         # this attention mask is more simple than the triangular masking of causal attention
         # used in OpenAI GPT, we just need to prepare the broadcast dimension here.
-        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2) #[bs,seq_len] --> [bs,1,1,seq_len]
 
         # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
         # masked positions, this operation will create a tensor which is 0.0 for
         # positions we want to attend and -10000.0 for masked positions.
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
-        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility，数据类型（dtype）转换为与模型的权重参数相同的数据类型
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0 #  为了不影响softmax计算,对于mask的位置填充-10000.0 (-inf),
 
-        embedding_output = self.embeddings(input_ids, token_type_ids)
+        embedding_output = self.embeddings(input_ids, token_type_ids)# [bs,seq_len] --> [bs,seq_len,hidden_size]
         encoded_layers = self.encoder(embedding_output,
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers)
-        sequence_output = encoded_layers[-1]
-        pooled_output = self.pooler(sequence_output)
+        sequence_output = encoded_layers[-1] # [bs,seq_len,hidden_size], 取最后一层的输出
+        pooled_output = self.pooler(sequence_output)# [bs,seq_len,hidden_size] --> [bs,hidden_size]，分类任务只取第一个[CLS]的输出
         if not output_all_encoded_layers:
             encoded_layers = encoded_layers[-1]
         return encoded_layers, pooled_output
 
 
+#TODO:  MLM训练的时候计算attention 不仅需要padding mask，还需要 有[MASK]的token的attention mask  还是在tokensize已经处理了？
+ 
 class BertForPreTraining(BertPreTrainedModel):
     """BERT model with pre-training heads.
     This module comprises the BERT model followed by the two pre-training heads:
@@ -755,12 +897,15 @@ class BertForPreTraining(BertPreTrainedModel):
             types indices selected in [0, 1]. Type 0 corresponds to a `sentence A` and type 1 corresponds to
             a `sentence B` token (see BERT paper for more details).
         `attention_mask`: an optional torch.LongTensor of shape [batch_size, sequence_length] with indices
-            selected in [0, 1]. It's a mask to be used if the input sequence length is smaller than the max
-            input sequence length in the current batch. It's the mask that we typically use for attention when
-            a batch has varying length sentences.
+            selected in [0, 1]. 
+            It's a mask to be used if the input sequence length is smaller than the max
+            input sequence length in the current batch. 
+            It's the mask that we typically use for attention when a batch has varying length sentences.
         `masked_lm_labels`: optional masked language modeling labels: torch.LongTensor of shape [batch_size, sequence_length]
-            with indices selected in [-1, 0, ..., vocab_size]. All labels set to -1 are ignored (masked), the loss
-            is only computed for the labels set in [0, ..., vocab_size]
+            with indices selected in [-1, 0, ..., vocab_size]. 
+            All labels set to -1 are ignored (unmasked), the loss is only computed for the labels set in [0, ..., vocab_size] 
+            训练的时候，替换成[mask]的token对于位置id保留，其他位置id设置为-1，表示不计算loss
+             -例如，原始句子是I want to [MASK] an apple，这里我把单词eat给遮住了输入模型，对应的label设置为[-1, -1, -1, 【eat对应的id】, -1, -1]；
         `next_sentence_label`: optional next sentence classification loss: torch.LongTensor of shape [batch_size]
             with indices selected in [0, 1].
             0 => next sentence is the continuation, 1 => next sentence is a random sentence.
@@ -788,6 +933,10 @@ class BertForPreTraining(BertPreTrainedModel):
     masked_lm_logits_scores, seq_relationship_logits = model(input_ids, token_type_ids, input_mask)
     ```
     """
+    
+    '''
+    BertPreTrainingHeads则是负责两个任务的预测模块 
+    '''
     def __init__(self, config):
         super(BertForPreTraining, self).__init__(config)
         self.bert = BertModel(config)
@@ -795,12 +944,25 @@ class BertForPreTraining(BertPreTrainedModel):
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None, next_sentence_label=None):
+        '''
+        前向传播和BertModel的有所不同，多了labels和next_sentence_label 两个输入
+        Args:
+            input_ids: [bs,seq_len], 输入的token id
+            token_type_ids: [bs,seq_len], 区分两个句子的token id, 0表示第一个句子,1表示第二个句子, for segment embedding
+            attention_mask: [bs,seq_len], 1表示不用忽略，0表示要忽略的位置
+            masked_lm_labels: [bs,seq_len],
+                -1表示该位置计算loss被忽略 (因为loss_fct = CrossEntropyLoss(ignore_index=-1))
+                训练任务中，替换成[MASK]的token位置id保留，其他位置id设置为-1，表示不计算loss
+                例如，原始句子是I want to [MASK] an apple，这里把单词eat给遮住了输入模型，对应的label设置为[-1, -1, -1, 【eat对应的id】, -1, -1]；
+                只计算[MASK]位置的loss,即为eat对应的id的loss
+            next_sentence_label: 0 和 1 的二分类标签
+        '''
         sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask,
-                                                   output_all_encoded_layers=False)
+                                                   output_all_encoded_layers=False) # sequence_output = [bs,seq_len,hidden_size],pooled_output = [bs,hidden_size]
         prediction_scores, seq_relationship_score = self.cls(sequence_output, pooled_output)
 
         if masked_lm_labels is not None and next_sentence_label is not None:
-            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss_fct = CrossEntropyLoss(ignore_index=-1) # -1表示忽略该位置的loss计算,因为只要[MASK]位置的loss计算 
             masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
             next_sentence_loss = loss_fct(seq_relationship_score.view(-1, 2), next_sentence_label.view(-1))
             total_loss = masked_lm_loss + next_sentence_loss
@@ -810,12 +972,17 @@ class BertForPreTraining(BertPreTrainedModel):
 
 
 class BertForMaskedLM(BertPreTrainedModel):
+    '''
+    BertForMaskedLM：只进行 MLM 任务的预训练；
+    基于BertOnlyMLMHead，而后者也是对BertLMPredictionHead的另一层封装；
+    
+    '''
     """BERT model with the masked language modeling head.
     This module comprises the BERT model followed by the masked language modeling head.
 
     Params:
         config: a BertConfig class instance with the configuration to build a new model.
-
+        
     Inputs:
         `input_ids`: a torch.LongTensor of shape [batch_size, sequence_length]
             with the word token indices in the vocabulary(see the tokens preprocessing logic in the scripts
@@ -859,11 +1026,11 @@ class BertForMaskedLM(BertPreTrainedModel):
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None):
         sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask,
-                                       output_all_encoded_layers=False)
-        prediction_scores = self.cls(sequence_output)
+                                       output_all_encoded_layers=False) # sequence_output = [bs,seq_len,hidden_size]
+        prediction_scores = self.cls(sequence_output) # [bs,seq_len,hidden_size] --> [bs,seq_len,vocab_size]
 
         if masked_lm_labels is not None:
-            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss_fct = CrossEntropyLoss(ignore_index=-1)   
             masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
             return masked_lm_loss
         else:
@@ -871,6 +1038,10 @@ class BertForMaskedLM(BertPreTrainedModel):
 
 
 class BertForNextSentencePrediction(BertPreTrainedModel):
+    '''
+        只进行 NSP 任务的预训练
+        基于BertOnlyNSPHead，内容就是一个线性层
+    '''
     """BERT model with next sentence prediction head.
     This module comprises the BERT model followed by the next sentence classification head.
 
@@ -894,8 +1065,7 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
 
     Outputs:
         if `next_sentence_label` is not `None`:
-            Outputs the total_loss which is the sum of the masked language modeling loss and the next
-            sentence classification loss.
+            Outputs  the next sentence classification loss.
         if `next_sentence_label` is `None`:
             Outputs the next sentence classification logits of shape [batch_size, 2].
 
@@ -921,8 +1091,8 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, next_sentence_label=None):
         _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask,
-                                     output_all_encoded_layers=False)
-        seq_relationship_score = self.cls( pooled_output)
+                                     output_all_encoded_layers=False) # pooled_output: [bs,hidden_size]
+        seq_relationship_score = self.cls( pooled_output) # [bs,hidden_size] --> [bs,2] 2分类，表示两个句子是否是相邻句子
 
         if next_sentence_label is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-1)
@@ -933,6 +1103,11 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
 
 
 class BertForSequenceClassification(BertPreTrainedModel):
+    '''
+    用于句子分类（也可以是回归）任务 
+    句子分类的输入为句子（对），输出为单个分类标签。
+    结构上很简单，就是BertModel（有 pooling）过一个 dropout 后接一个线性层输出分类
+    '''
     """BERT model for classification.
     This module is composed of the BERT model with a linear layer on top of
     the pooled output.
@@ -986,9 +1161,9 @@ class BertForSequenceClassification(BertPreTrainedModel):
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
-        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False) # pooled_output: [bs,hidden_size]
         pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
+        logits = self.classifier(pooled_output)# [bs,hidden_size] --> [bs,num_labels]
 
         if labels is not None:
             loss_fct = CrossEntropyLoss()
@@ -999,6 +1174,13 @@ class BertForSequenceClassification(BertPreTrainedModel):
 
 
 class BertForMultipleChoice(BertPreTrainedModel):
+    '''
+    多项选择
+    多项选择任务的输入为一组分次输入的句子，输出为选择某一句子的单个标签。 
+    结构上与句子分类相似，只不过线性层输出维度为 1，即每次需要将每个样本的多个句子的输出拼接起来作为每个样本的预测分数。
+    实际上，具体操作时是把每个 batch 的多个句子一同放入的，所以一次处理的输入为[batch_size, num_choices]数量的句子，
+    因此相同 batch 大小时，比句子分类等任务需要更多的显存，在训练时需要小心。
+    '''
     """BERT model for multiple choice tasks.
     This module is composed of the BERT model with a linear layer on top of
     the pooled output.
@@ -1068,6 +1250,10 @@ class BertForMultipleChoice(BertPreTrainedModel):
 
 
 class BertForTokenClassification(BertPreTrainedModel):
+    '''
+        用于序列标注（词分类）
+        序列标注任务的输入为单个句子文本，输出为每个 token 对应的类别标签。 由于需要用到每个 token对应的输出而不只是某几个 
+    '''
     """BERT model for token-level classification.
     This module is composed of the BERT model with a linear layer on top of
     the full hidden state of the last layer.

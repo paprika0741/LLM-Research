@@ -8,6 +8,7 @@ from functools import lru_cache
 @lru_cache()
 def bytes_to_unicode():
     """
+    创建一个字节到Unicode字符的映射
     Returns list of utf-8 byte and a corresponding list of unicode strings.
     The reversible bpe codes work on unicode strings.
     This means you need a large # of unicode characters in your vocab if you want to avoid UNKs.
@@ -40,7 +41,8 @@ def get_pairs(word):
 
 class Encoder:
     def __init__(self, encoder, bpe_merges, errors='replace'):
-        self.encoder = encoder
+        # encoder 和 decoder：这两个字典分别用于将符号映射到整数和将整数映射回符号，用于编码和解码。
+        self.encoder = encoder 
         self.decoder = {v:k for k,v in self.encoder.items()}
         self.errors = errors # how to handle errors in decoding
         self.byte_encoder = bytes_to_unicode()
@@ -49,7 +51,7 @@ class Encoder:
         self.cache = {}
 
         # Should haved added re.IGNORECASE so BPE merges can happen for capitalized versions of contractions
-        self.pat = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+        self.pat = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""") # 正则表达式，用于将输入文本分割成单词和其他字符
 
     def bpe(self, token):
         if token in self.cache:
@@ -93,6 +95,7 @@ class Encoder:
         return word
 
     def encode(self, text):
+        # 接受一个文本字符串作为输入，然后将其编码成BPE符号的列表。
         bpe_tokens = []
         for token in re.findall(self.pat, text):
             token = ''.join(self.byte_encoder[b] for b in token.encode('utf-8'))
@@ -100,11 +103,17 @@ class Encoder:
         return bpe_tokens
 
     def decode(self, tokens):
+        # 接受BPE符号的列表作为输入，然后将其解码成原始文本字符串。
         text = ''.join([self.decoder[token] for token in tokens])
         text = bytearray([self.byte_decoder[c] for c in text]).decode('utf-8', errors=self.errors)
         return text
 
 def get_encoder():
+    '''
+    从json文件中加载BPE编码器所需的数据，
+    包括编码器映射（encoder.json）和BPE合并规则（vocab.bpe），
+    然后返回一个Encoder类的实例，可以用于编码和解码文本。
+    '''
     with open('./GPT2/encoder.json', 'r') as f:
         encoder = json.load(f)
     with open('./GPT2/vocab.bpe', 'r', encoding="utf-8") as f:

@@ -19,8 +19,8 @@ def text_generator(state_dict):
     parser = argparse.ArgumentParser()
     parser.add_argument("--text", type=str, required=True)
     parser.add_argument("--quiet", type=bool, default=False)
-    parser.add_argument("--nsamples", type=int, default=1)
-    parser.add_argument('--unconditional', action='store_true', help='If true, unconditional generation.')
+    parser.add_argument("--nsamples", type=int, default=1) # 生成的样本数量
+    parser.add_argument('--unconditional', action='store_true', help='If true, unconditional generation.') # 是否无条件生成
     parser.add_argument("--batch_size", type=int, default=-1)
     parser.add_argument("--length", type=int, default=-1)
     parser.add_argument("--temperature", type=float, default=0.7)
@@ -41,11 +41,11 @@ def text_generator(state_dict):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load Model
-    enc = get_encoder()
+    enc = get_encoder() # 加载BPE编码器
     config = GPT2Config()
     model = GPT2LMHeadModel(config)
-    model = load_weight(model, state_dict)
-    model.to(device)
+    model = load_weight(model, state_dict) # 将预训练模型的权重加载到指定模型
+    model.to(device) 
     model.eval()
 
     if args.length == -1:
@@ -54,17 +54,17 @@ def text_generator(state_dict):
         raise ValueError("Can't get samples longer than window size: %s" % config.n_ctx)
 
     print(args.text)
-    context_tokens = enc.encode(args.text)
-
+    context_tokens = enc.encode(args.text) # 
     generated = 0
     for _ in range(args.nsamples // args.batch_size):
+        # 如果是无条件生成，context为none，start_token不为none
         out = sample_sequence(
             model=model, length=args.length,
             context=context_tokens  if not  args.unconditional else None,
             start_token=enc.encoder['<|endoftext|>'] if args.unconditional else None,
             batch_size=args.batch_size,
             temperature=args.temperature, top_k=args.top_k, device=device
-        )
+        ) # 生成文本序列  [bs, input_seq_len + args.length ]
         out = out[:, len(context_tokens):].tolist()
         for i in range(args.batch_size):
             generated += 1
@@ -74,6 +74,7 @@ def text_generator(state_dict):
             print(text)
 
 if __name__ == '__main__':
+    # 加载GPT2参数
     if os.path.exists('gpt2-pytorch_model.bin'):
         state_dict = torch.load('gpt2-pytorch_model.bin', map_location='cpu' if not torch.cuda.is_available() else None)
         text_generator(state_dict)

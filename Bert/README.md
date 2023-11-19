@@ -58,13 +58,15 @@ bert模型放在 bert_pretain目录下，ERNIE模型放在ERNIE_pretrain目录�
 
 预训练模型下载地址：  
 bert_Chinese: 模型 https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-chinese.tar.gz  
-              词表 https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-chinese-vocab.txt  
+              词表 https://s3.amazonaws.com/models.huggingface.co/bert/bert-base-chinese-vocab.txt  (rename:vocab.txt  )
 来自[这里](https://github.com/huggingface/pytorch-transformers)   
 备用：模型的网盘地址：https://pan.baidu.com/s/1qSAD5gwClq7xlgzl_4W3Pw
 
 ERNIE_Chinese: http://image.nghuyong.top/ERNIE.zip  
 来自[这里](https://github.com/nghuyong/ERNIE-Pytorch)  
 备用：网盘地址：https://pan.baidu.com/s/1lEPdDN1-YQJmKEd_g9rLgw  
+THUCNews/saved_dict: https://github.com/649453932/Chinese-Text-Classification-Pytorch/tree/master/THUCNews
+
 
 解压后，按照上面说的放在对应目录下，文件名称确认无误即可。  
 
@@ -87,6 +89,41 @@ python run.py --model ERNIE
 
 ## 未完待续
  - 封装预测功能
+
+## BERT pretrained  
+1. 计算MLM loss的时候，应该只计算被mask 位置loss，而不是忽略被mask 位置loss
+2. MLM attention 计算过程中，不只是处理padding mask，对于[mask]位置也要进行mask
+
+## 模型
+```lua
+BertModel (BertPreTrainedModel)
+|
+|-- BertEmbeddings
+|   |
+|   |--Word Embedding 
+|   |--Position Embedding
+|   |--Tokentype Embedding
+|   |
+|-- BertEncoder
+|   |
+|   |-- BertLayer (x N)
+|   |   |
+|   |   |-- BertAttention
+|   |   |   |
+|   |   |   |-- BertSelfAttention
+|   |   |   |-- BertSelfOutput
+|   |   |   |   |
+|   |   |   |   |-- Linear
+|   |   |   |   |-- BertLayerNorm
+|   |   |
+|   |   |-- BertIntermediate (hidden_size-->intermediate_size)
+|   |   |
+|   |   |-- BertOutput(intermediate_size-->hidden_size)
+|   |   |   |
+|   |   |   |-- Linear
+|   |   |   |-- BertLayerNorm
+|-- BertPooler
+```
 
 
 ## 对应论文
